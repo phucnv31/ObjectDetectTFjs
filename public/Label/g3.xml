@@ -1,0 +1,26 @@
+<annotation>
+	<folder>Image</folder>
+	<filename>g3.jpg</filename>
+	<path>D:\LapTrinh\AI\MyProject\ObjectDetectTfjs\public\Image\g3.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>625</width>
+		<height>352</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>google</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>165</xmin>
+			<ymin>48</ymin>
+			<xmax>460</xmax>
+			<ymax>148</ymax>
+		</bndbox>
+	</object>
+</annotation>

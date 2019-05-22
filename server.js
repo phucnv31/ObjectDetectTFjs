@@ -1,12 +1,20 @@
-var tf = require('@tensorflow/tfjs');
+const fs = require('fs');
+const tf = require('@tensorflow/tfjs');
 const readline = require('readline');
 require('@tensorflow/tfjs-node')
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 });
+let dataImageJson = [];
+const { promisify } = require('util')
+const readFileAsync = promisify(fs.readFile)
+const writeFileAsync = promisify(fs.writeFile)
+const readDirAsync = promisify(fs.readdir)
+const path = require('path')
+// path.extname('index.html')
+const parser = require('xml2json');
 const csv = require('csv-parser');
-const fs = require('fs');
 Canvas = require('canvas');
 const IMG_Width = 224;
 const IMG_Height = 224;
@@ -32,9 +40,16 @@ var currentModel;
 var datas;
 var xs;
 var ys;
-mainFuction();
+program();
 
-
+async function program() {
+  try {
+    currentModel = await tf.loadLayersModel('file://D:/LapTrinh/AI/MyProject/ObjectDetectTfjs/public/Model/model.json');
+    ObjDetect(currentModel)
+  } catch (error) {
+    readFileXml('D:/LapTrinh/AI/MyProject/ObjectDetectTfjs/public/Label');
+  }
+}
 /**
  * Custom loss function for object detection.
  *
@@ -138,43 +153,93 @@ async function buildObjectDetectionModel() {
 }
 async function mainFuction() {
   const { model, fineTuningLayers } = await buildObjectDetectionModel();
-  model.compile({ loss: customLossFunction, optimizer: tf.train.rmsprop(5e-3) });
+  model.compile({ loss: customLossFunction, optimizer: tf.train.rmsprop(5e-4), metrics: ['accuracy'] });
   console.log('Phase 1...');
   model.summary();
-  // // Initial phase of transfer learning.
-  // await model.fit(images, targets, {
-  //   epochs: 50,
-  //   batchSize: 2,
-  //   callbacks: {
-  //     onBatchEnd: async (batch, logs) => {
-  //       console.log('Loss: ' + logs.loss.toFixed(5));
-  //       console.log('accuracy: ' + logs.acc);
-  //     }
-  //   }
-  // });
-  // // Fine-tuning phase of transfer learning.
-  // // Unfreeze layers for fine-tuning.
-  // for (const layer of fineTuningLayers) {
-  //   layer.trainable = true;
-  // }
-  // model.compile({ loss: customLossFunction, optimizer: tf.train.rmsprop(2e-3) });
-  // model.summary();
+  // Initial phase of transfer learning.
+  await model.fit(xs, ys, {
+    epochs: 100,
+    batchSize: 2,
+    callbacks: {
+      onBatchEnd: async (batch, logs) => {
+        console.log('Loss: ' + logs.loss.toFixed(5));
+        console.log('accuracy: ' + logs.acc);
+      }
+    }
+  });
+  // Fine-tuning phase of transfer learning.
+  // Unfreeze layers for fine-tuning.
+  for (const layer of fineTuningLayers) {
+    layer.trainable = true;
+  }
+  model.compile({ loss: customLossFunction, optimizer: tf.train.rmsprop(2e-3), metrics: ['accuracy'] });
+  model.summary();
 
-  // // Do fine-tuning.
-  // // The batch size is reduced to avoid CPU/GPU OOM. This has
-  // // to do with the unfreezing of the fine-tuning layers above,
-  // // which leads to higher memory consumption during backpropagation.
-  // console.log('Phase 2 of 2: fine-tuning phase');
-  // await model.fit(images, targets, {
-  //   epochs: 50,
-  //   batchSize: args.batchSize / 2,
-  //   callbacks: {
-  //     onBatchEnd: async (batch, logs) => {
-  //       console.log('Loss: ' + logs.loss.toFixed(5));
-  //       console.log('accuracy: ' + logs.acc);
-  //     }
-  //   }
-  // });
+  // Do fine-tuning.
+  // The batch size is reduced to avoid CPU/GPU OOM. This has
+  // to do with the unfreezing of the fine-tuning layers above,
+  // which leads to higher memory consumption during backpropagation.
+  console.log('Phase 2 of 2: fine-tuning phase');
+  await model.fit(xs, ys, {
+    epochs: 50,
+    batchSize: 1,
+    callbacks: {
+      onBatchEnd: async (batch, logs) => {
+        console.log('Loss: ' + logs.loss.toFixed(5));
+        console.log('accuracy: ' + logs.acc);
+      }
+    }
+  });
+  currentModel = model;
+  await currentModel.save('file://D:/LapTrinh/AI/MyProject/ObjectDetectTfjs/public/Model');
+  ObjDetect(currentModel);
+}
+async function readFileXml(path) {
+  const files = await readDirAsync(path);
+  for (const file of files) {
+    const data = await readFileAsync(path + '/' + file, 'utf8');
+    const json = JSON.parse(parser.toJson(data));
+    dataImageJson.push(json);
+    const arr = [
+      1,
+      json.annotation.object.bndbox.xmin,
+      json.annotation.object.bndbox.ymin,
+      json.annotation.object.bndbox.xmax,
+      json.annotation.object.bndbox.ymax
+    ]
+    const y = tf.tensor2d(arr, [1, 5]);
+    if (!ys) {
+      ys = tf.keep(y);
+    } else {
+      const oldY = ys;
+      ys = tf.keep(oldY.concat(y, 0));
+      oldY.dispose();
+      y.dispose();
+    }
+  }
+  //listing all files using forEach
+  console.log('ys', ys);
+  loadTrainData();
+  mainFuction();
+}
+
+function loadTrainData() {
+  for (const imageInfo of dataImageJson) {
+    const x = getImgAndResize('D:/LapTrinh/AI/MyProject/ObjectDetectTfjs/public/Image/' + imageInfo.annotation.filename)
+    if (!xs) {
+      xs = tf.keep(x);
+    } else {
+      const oldX = xs;
+      xs = tf.keep(oldX.concat(x, 0));
+      oldX.dispose();
+      x.dispose();
+    }
+  }
+  console.log('xs:', xs);
+}
+function ObjDetect(model) {
+  const result = model.predict(getImgAndResize('D:/LapTrinh/AI/MyProject/ObjectDetectTfjs/public/Predict/test.jpg'));
+  console.log(result.arraySync());
 }
 
 
@@ -185,217 +250,214 @@ async function mainFuction() {
 
 
 
+// readFileCsv();
 
+// function readFileCsv() {
+//   const results = [];
+//   const labels = [];
+//   fs.createReadStream('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train.csv')
+//     .pipe(csv())
+//     .on('data', data => {
+//       results.push(data);
+//       labels.push(data.label);
+//     })
+//     .on('end', async () => {
+//       datas = results;
+//       CLASSES = labels.filter(distinct);
+//       NUM_CLASSES = CLASSES.length;
+//       truncatedMobileNet = await loadTruncatedMobileNet();
+//       truncatedMobileNet.summary()
+//       try {
+//         currentModel = await tf.loadLayersModel('file://D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/model.json');
+//       } catch (error) {
+//         currentModel = createConvModel();
+//         // await currentModel.save('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/');
+//         getTrainData();
+//         console.log('start train');
+//         await train(currentModel);
+//         console.log('train done');
+//         currentModel.save('file://D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition');
+//         // const pre = currentModel.predict(getImgAndResize('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/0b4c2cf7352f40a3b55339f13c04bcda.png'))
+//         // const arr = pre.arraySync();
+//         // console.log('arr', arr);
+//         // console.log('max score', Math.max(...arr[0]));
+//         // const index = arr[0].indexOf(Math.max(...arr[0]))
+//         // console.log('max score', CLASSES[index]);
+//       }
+//       // input();
+//       predictFolder();
+//     });
+// }
 
+// function input() {
+//   rl.question('Input path image to predict: ', (answer) => {
+//     if (answer !== 'stop') {
+//       predict(answer);
+//     } else {
+//       rl.close();
+//     }
+//   });
+// }
+// function moveImage2() {
+//   fs.readdir('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/', function (err, files) {
+//     //handling error
+//     if (err) {
+//       return console.log('Unable to scan directory: ' + err);
+//     }
+//     //listing all files using forEach
+//     files.forEach(function (file) {
+//       // Do whatever you want to do with the file
+//       var img = new Canvas.Image(); // Create a new Image
+//       img.src = 'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/' + file;
+//       var canvas = Canvas.createCanvas(img.width, img.height);
+//       var ctx = canvas.getContext('2d');
+//       ctx.drawImage(img, 0, 0);
+//       let pixels = ctx.getImageData(0, 0, img.width, img.height);
+//       for (let y = 0; y < pixels.height; y++) {
+//         for (let x = 0; x < pixels.width; x++) {
+//           let i = (y * 4) * pixels.width + x * 4;
+//           let avg = (pixels.data[i] + pixels.data[i + 1] + pixels.data[i + 2]) / 3;
+//           pixels.data[i] = avg;
+//           pixels.data[i + 1] = avg;
+//           pixels.data[i + 2] = avg;
+//         }
+//       }
+//       ctx.putImageData(pixels, 0, 0, 0, 0, pixels.width, pixels.height);
+//       var buf = canvas.toBuffer();
+//       fs.writeFileSync('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test_move/' + file, buf);
+//     });
+//   });
 
-  // readFileCsv();
+// }
 
-  // function readFileCsv() {
-  //   const results = [];
-  //   const labels = [];
-  //   fs.createReadStream('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train.csv')
-  //     .pipe(csv())
-  //     .on('data', data => {
-  //       results.push(data);
-  //       labels.push(data.label);
-  //     })
-  //     .on('end', async () => {
-  //       datas = results;
-  //       CLASSES = labels.filter(distinct);
-  //       NUM_CLASSES = CLASSES.length;
-  //       truncatedMobileNet = await loadTruncatedMobileNet();
-  //       truncatedMobileNet.summary()
-  //       try {
-  //         currentModel = await tf.loadLayersModel('file://D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/model.json');
-  //       } catch (error) {
-  //         currentModel = createConvModel();
-  //         // await currentModel.save('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/');
-  //         getTrainData();
-  //         console.log('start train');
-  //         await train(currentModel);
-  //         console.log('train done');
-  //         currentModel.save('file://D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition');
-  //         // const pre = currentModel.predict(getImgAndResize('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/0b4c2cf7352f40a3b55339f13c04bcda.png'))
-  //         // const arr = pre.arraySync();
-  //         // console.log('arr', arr);
-  //         // console.log('max score', Math.max(...arr[0]));
-  //         // const index = arr[0].indexOf(Math.max(...arr[0]))
-  //         // console.log('max score', CLASSES[index]);
-  //       }
-  //       // input();
-  //       predictFolder();
-  //     });
-  // }
+// function moveImage(path, label) {
+//   var img = new Canvas.Image(); // Create a new Image
+//   img.src = 'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train/' + path;
+//   var canvas = Canvas.createCanvas(img.width, img.height);
+//   var ctx = canvas.getContext('2d');
+//   ctx.drawImage(img, 0, 0);
+//   let pixels = ctx.getImageData(0, 0, img.width, img.height);
+//   for (let y = 0; y < pixels.height; y++) {
+//     for (let x = 0; x < pixels.width; x++) {
+//       let i = (y * 4) * pixels.width + x * 4;
+//       let avg = (pixels.data[i] + pixels.data[i + 1] + pixels.data[i + 2]) / 3;
+//       pixels.data[i] = avg;
+//       pixels.data[i + 1] = avg;
+//       pixels.data[i + 2] = avg;
+//     }
+//   }
+//   ctx.putImageData(pixels, 0, 0, 0, 0, pixels.width, pixels.height);
+//   var buf = canvas.toBuffer();
+//   fs.writeFileSync('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train_move/' + 'Label' + label + '_' + path, buf);
+// }
+// function logFile(content) {
+//   fs.writeFile('log.txt', content, (err) => {
+//     if (err) console.log(err);
+//     console.log('Successfully Written to File.');
+//   });
+// }
 
-  // function input() {
-  //   rl.question('Input path image to predict: ', (answer) => {
-  //     if (answer !== 'stop') {
-  //       predict(answer);
-  //     } else {
-  //       rl.close();
-  //     }
-  //   });
-  // }
-  // function moveImage2() {
-  //   fs.readdir('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/', function (err, files) {
-  //     //handling error
-  //     if (err) {
-  //       return console.log('Unable to scan directory: ' + err);
-  //     }
-  //     //listing all files using forEach
-  //     files.forEach(function (file) {
-  //       // Do whatever you want to do with the file
-  //       var img = new Canvas.Image(); // Create a new Image
-  //       img.src = 'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/' + file;
-  //       var canvas = Canvas.createCanvas(img.width, img.height);
-  //       var ctx = canvas.getContext('2d');
-  //       ctx.drawImage(img, 0, 0);
-  //       let pixels = ctx.getImageData(0, 0, img.width, img.height);
-  //       for (let y = 0; y < pixels.height; y++) {
-  //         for (let x = 0; x < pixels.width; x++) {
-  //           let i = (y * 4) * pixels.width + x * 4;
-  //           let avg = (pixels.data[i] + pixels.data[i + 1] + pixels.data[i + 2]) / 3;
-  //           pixels.data[i] = avg;
-  //           pixels.data[i + 1] = avg;
-  //           pixels.data[i + 2] = avg;
-  //         }
-  //       }
-  //       ctx.putImageData(pixels, 0, 0, 0, 0, pixels.width, pixels.height);
-  //       var buf = canvas.toBuffer();
-  //       fs.writeFileSync('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test_move/' + file, buf);
-  //     });
-  //   });
+// function predict(path) {
+//   const pre = currentModel.predict(truncatedMobileNet.predict(getImgAndResize('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/' + path)))
+//   const arr = pre.arraySync();
+//   const maxScore = Math.max(...arr[0]);
+//   const index = arr[0].indexOf(maxScore)
+//   return { maxScore: maxScore, class: CLASSES[index] };
+// }
+// function predictFolder() {
+//   let i = 0;
+//   fs.readdir('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/', function (err, files) {
+//     if (err) {
+//       return console.log('Unable to scan directory: ' + err);
+//     }
+//     let lines = '';
+//     for (const file of files) {
+//       if (i++ > 1000) {
+//         break;
+//       }
+//       const pre = predict(file);
+//       if (pre.maxScore >= 0.5) {
+//         lines += file + ' : ' + pre.class + ' : ' + pre.maxScore + '\n';
+//       }
+//     }
+//     logFile(lines);
+//   });
+// }
+// async function loadTruncatedMobileNet() {
+//   const mobilenet = await tf.loadLayersModel(
+//     'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json');
 
-  // }
+//   const layer = mobilenet.getLayer('conv_pw_13_relu');
+//   return tf.model({ inputs: mobilenet.inputs, outputs: layer.output });
+// }
 
-  // function moveImage(path, label) {
-  //   var img = new Canvas.Image(); // Create a new Image
-  //   img.src = 'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train/' + path;
-  //   var canvas = Canvas.createCanvas(img.width, img.height);
-  //   var ctx = canvas.getContext('2d');
-  //   ctx.drawImage(img, 0, 0);
-  //   let pixels = ctx.getImageData(0, 0, img.width, img.height);
-  //   for (let y = 0; y < pixels.height; y++) {
-  //     for (let x = 0; x < pixels.width; x++) {
-  //       let i = (y * 4) * pixels.width + x * 4;
-  //       let avg = (pixels.data[i] + pixels.data[i + 1] + pixels.data[i + 2]) / 3;
-  //       pixels.data[i] = avg;
-  //       pixels.data[i + 1] = avg;
-  //       pixels.data[i + 2] = avg;
-  //     }
-  //   }
-  //   ctx.putImageData(pixels, 0, 0, 0, 0, pixels.width, pixels.height);
-  //   var buf = canvas.toBuffer();
-  //   fs.writeFileSync('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train_move/' + 'Label' + label + '_' + path, buf);
-  // }
-  // function logFile(content) {
-  //   fs.writeFile('log.txt', content, (err) => {
-  //     if (err) console.log(err);
-  //     console.log('Successfully Written to File.');
-  //   });
-  // }
+// function createConvModel() {
+//   model = tf.sequential({
+//     layers: [
+//       tf.layers.flatten(
+//         { inputShape: truncatedMobileNet.outputs[0].shape.slice(1) }),
+//       tf.layers.dense({
+//         units: NUM_CLASSES,
+//         activation: 'relu',
+//         kernelInitializer: 'varianceScaling',
+//         useBias: true
+//       }),
+//       tf.layers.dense({
+//         units: NUM_CLASSES,
+//         kernelInitializer: 'varianceScaling',
+//         useBias: false,
+//         activation: 'softmax'
+//       })
+//     ]
+//   });
+//   return model;
+// }
 
-  // function predict(path) {
-  //   const pre = currentModel.predict(truncatedMobileNet.predict(getImgAndResize('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/' + path)))
-  //   const arr = pre.arraySync();
-  //   const maxScore = Math.max(...arr[0]);
-  //   const index = arr[0].indexOf(maxScore)
-  //   return { maxScore: maxScore, class: CLASSES[index] };
-  // }
-  // function predictFolder() {
-  //   let i = 0;
-  //   fs.readdir('D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/test/', function (err, files) {
-  //     if (err) {
-  //       return console.log('Unable to scan directory: ' + err);
-  //     }
-  //     let lines = '';
-  //     for (const file of files) {
-  //       if (i++ > 1000) {
-  //         break;
-  //       }
-  //       const pre = predict(file);
-  //       if (pre.maxScore >= 0.5) {
-  //         lines += file + ' : ' + pre.class + ' : ' + pre.maxScore + '\n';
-  //       }
-  //     }
-  //     logFile(lines);
-  //   });
-  // }
-  // async function loadTruncatedMobileNet() {
-  //   const mobilenet = await tf.loadLayersModel(
-  //     'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json');
-
-  //   const layer = mobilenet.getLayer('conv_pw_13_relu');
-  //   return tf.model({ inputs: mobilenet.inputs, outputs: layer.output });
-  // }
-
-  // function createConvModel() {
-  //   model = tf.sequential({
-  //     layers: [
-  //       tf.layers.flatten(
-  //         { inputShape: truncatedMobileNet.outputs[0].shape.slice(1) }),
-  //       tf.layers.dense({
-  //         units: NUM_CLASSES,
-  //         activation: 'relu',
-  //         kernelInitializer: 'varianceScaling',
-  //         useBias: true
-  //       }),
-  //       tf.layers.dense({
-  //         units: NUM_CLASSES,
-  //         kernelInitializer: 'varianceScaling',
-  //         useBias: false,
-  //         activation: 'softmax'
-  //       })
-  //     ]
-  //   });
-  //   return model;
-  // }
-
-  // function getTrainData() {
-  //   var i = 0;
-  //   for (const item of datas) {
-  //     i++;
-  //     const y = tf.tidy(
-  //       () => tf.oneHot(tf.tensor1d([+item.label]).toInt(), NUM_CLASSES));
-  //     if (!xs) {
-  //       xs = tf.keep(truncatedMobileNet.predict(getImgAndResize(
-  //         'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train/' + item.image
-  //       )));
-  //       ys = tf.keep(y);
-  //     } else {
-  //       const oldX = xs;
-  //       xs = tf.keep(
-  //         oldX.concat(
-  //           truncatedMobileNet.predict(getImgAndResize(
-  //             'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train/' + item.image
-  //           )),
-  //           0
-  //         )
-  //       );
-  //       const oldY = ys;
-  //       ys = tf.keep(oldY.concat(y, 0));
-  //       oldX.dispose();
-  //       oldY.dispose();
-  //       y.dispose();
-  //     }
-  //     console.log('i:' + i);
-  //   }
-  //   ys.print();
-  // }
-  // function getImgAndResize(path) {
-  //   var img = new Canvas.Image(); // Create a new Image
-  //   img.src = path;
-  //   var canvas = Canvas.createCanvas(img.width, img.height);
-  //   var ctx = canvas.getContext('2d');
-  //   ctx.drawImage(img, 0, 0);
-  //   var image = tf.browser.fromPixels(canvas);
-  //   image = tf.image.resizeBilinear(image, [IMG_Height, IMG_Width], false);
-  //   const batchedImage = image.expandDims(0);
-  //   return batchedImage
-  //     .toFloat()
-  //     .div(tf.scalar(127))
-  //     .sub(tf.scalar(1));
-  // }
+// function getTrainData() {
+//   var i = 0;
+//   for (const item of datas) {
+//     i++;
+//     const y = tf.tidy(
+//       () => tf.oneHot(tf.tensor1d([+item.label]).toInt(), NUM_CLASSES));
+//     if (!xs) {
+//       xs = tf.keep(truncatedMobileNet.predict(getImgAndResize(
+//         'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train/' + item.image
+//       )));
+//       ys = tf.keep(y);
+//     } else {
+//       const oldX = xs;
+//       xs = tf.keep(
+//         oldX.concat(
+//           truncatedMobileNet.predict(getImgAndResize(
+//             'D:/LapTrinh/AI/ANN/DataSet/vn_celeb_face_recognition/train/' + item.image
+//           )),
+//           0
+//         )
+//       );
+//       const oldY = ys;
+//       ys = tf.keep(oldY.concat(y, 0));
+//       oldX.dispose();
+//       oldY.dispose();
+//       y.dispose();
+//     }
+//     console.log('i:' + i);
+//   }
+//   ys.print();
+// }
+function getImgAndResize(path) {
+  var img = new Canvas.Image(); // Create a new Image
+  img.src = path;
+  var canvas = Canvas.createCanvas(img.width, img.height);
+  var ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  var image = tf.browser.fromPixels(canvas);
+  image = tf.image.resizeBilinear(image, [IMG_Height, IMG_Width], false);
+  const batchedImage = image.expandDims(0);
+  return batchedImage
+    .toFloat()
+    .div(tf.scalar(127))
+    .sub(tf.scalar(1));
+}
 
   // function getImgResizeAndGrayScale(path) {
   //   var img = new Canvas.Image(); // Create a new Image
